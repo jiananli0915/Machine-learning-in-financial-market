@@ -1,0 +1,247 @@
+---
+title: "GroupAsstH2O"
+output:
+  html_document:
+    df_print: paged
+---
+
+Initialize and Connect to H2O (package)
+H2o need Java SE,but only version 8, 9, 10, 11, 12 and 13 are supported.
+```{r echo=TRUE, results='hide',error=FALSE, warning=FALSE, message=FALSE}
+library(h2o)
+Sys.setenv(JAVA_HOME="E:/JavaSEv11") # path of Java
+#Only Java SE version 8, 9, 10, 11, 12 and 13 are supported. 
+h2o.init()
+```
+
+Import and process data
+```{r echo=TRUE,error=FALSE, warning=FALSE, message=FALSE}
+library(quantmod,quietly = T)
+getSymbols("^DJI",from = "2008-01-01",to = "2020-01-01",auto.assign = TRUE)
+
+DJI = as.data.frame(DJI)
+end = length(DJI$DJI.Adjusted)
+lrt = log(DJI$DJI.Adjusted[2:end]/DJI$DJI.Adjusted[1:end-1])
+lrt = tanh(lrt/0.03)*0.03
+hist(lrt)
+lvl = log(1+DJI$DJI.Volume)[2:end]
+```
+
+Make Lag matrices
+```{r echo=TRUE,results='hide',error=FALSE, warning=FALSE, message=FALSE}
+library(tsutils)
+n = 5
+RLAG = lagmatrix(lrt,1:n)
+RLAG = RLAG[(n+1):length(lrt),]
+
+m = 2
+VLAG = lagmatrix(lvl,1:m)
+VLAG = VLAG[(n+1):length(lvl),]
+X = as.data.frame(cbind(RLAG,VLAG))
+Y = lrt[(n+1):length(lrt)] # Today's log return
+Direction = as.factor(ifelse(Y>0,"Up","Down"))
+data = as.h2o(cbind(X,Y,Direction))
+names(data) <- cbind("Lag1","Lag2","Lag3","Lag4","Lag5","VolLag1","VolLag2","Today","Direction")
+
+Responses <- "Today"
+Predictors <- names(data)[1:7]
+Directions <- "Direction"
+```
+
+Set train and test index and folds
+```{r}
+test = 2016:3015 # the last 1000 test data
+train = (-test)
+```
+
+# Ridge Regression 
+5-folds cross-validtion, using the best lambda by set "lambda_search = TRUE".
+```{r echo=TRUE,results='hide',error=FALSE, warning=FALSE, message=FALSE}
+my_ridge <- h2o.glm(x = Predictors, 
+                    y = Responses,
+                    nfolds = 5,
+                    training_frame = data[train,],
+                    keep_cross_validation_predictions = TRUE,
+                    alpha = 0,
+                    lambda_search = TRUE,
+                    seed = 123)
+# Combination of each cv hould-out prediction.
+ridge_cv_pred <- as.data.frame(h2o.getFrame(my_ridge@model [["cross_validation_holdout_predictions_frame_id"]][["name"]]))
+
+# Prediction, performance on test/out of sample data
+ridge_pred <- h2o.predict(my_ridge, newdata = data[test,])
+```
+
+
+```{r echo=TRUE,error=FALSE, warning=FALSE, message=FALSE}
+ridge_perf <- h2o.performance(my_ridge, newdata = data[test,])
+ridge_perf # MSE = 5.121316e-05 
+```
+
+# Logistic regression
+Set "family = 'binomial'"to get the logistic regression
+```{r echo=TRUE,results='hide',error=FALSE, warning=FALSE, message=FALSE}
+my_logistic <- h2o.glm(x = Predictors,
+                       y = Directions,
+                       nfolds = 5,
+                       family = "binomial",
+                       training_frame = data[train,],
+                       lambda = 0,
+                       keep_cross_validation_predictions = TRUE,
+                       seed=123)
+# Combination of each cv hould-out prediction.
+logistic_cv_pred <- as.data.frame(h2o.getFrame(my_logistic@model
+ [["cross_validation_holdout_predictions_frame_id"]]
+                            [["name"]]))
+
+# Prediction, performance on test/out of sample data
+logistic_pred <- h2o.predict(my_logistic,newdata = data[test,])
+```
+
+
+```{r echo=TRUE,error=FALSE, warning=FALSE, message=FALSE}
+logistic_perf <- h2o.performance(my_logistic, newdata = data[test,])
+logistic_perf # max accuracy = 0.465212
+```
+
+# Gradient	Boosting
+```{r echo=TRUE,results='hide',error=FALSE, warning=FALSE, message=FALSE}
+my_gb <- h2o.gbm(x = Predictors,
+                  y = Responses,
+                  training_frame = data[train,],
+                  nfolds = 5,
+                  keep_cross_validation_predictions = TRUE,
+                  seed=123)
+# Combination of each cv hould-out prediction.
+gb_cv_pred <- as.data.frame(h2o.getFrame(my_gb@model
+[["cross_validation_holdout_predictions_frame_id"]]
+                                   [["name"]]))
+# Prediction, performance on test/out of sample data
+gb_pred <- h2o.predict(my_gb, newdata = data[test,])
+```
+
+
+```{r echo=TRUE,error=FALSE, warning=FALSE, message=FALSE}
+gb_perf <- h2o.performance(my_gb, newdata = data[test,])
+gb_perf # MSE : 5.637587e-05
+
+```
+
+# Random Forest
+```{r echo=TRUE,results='hide',error=FALSE, warning=FALSE, message=FALSE}
+my_rf <- h2o.randomForest(x = Predictors,
+                          y = Responses,
+                          training_frame = data[train,],
+                          ntrees = 50,
+                          nfolds = 5,
+                          keep_cross_validation_predictions = TRUE,
+                          seed=123)
+
+rf_cv_pred <- as.data.frame(h2o.getFrame(my_rf@model
+                                            [["cross_validation_holdout_predictions_frame_id"]]
+                                            [["name"]]))
+rf_pred <- h2o.predict(my_rf, newdata = data[test,])
+```
+
+
+```{r echo=TRUE,error=FALSE, warning=FALSE, message=FALSE}
+rf_perf <- h2o.performance(my_rf, newdata = data[test,])
+rf_perf # MSE:  5.52626e-05
+```
+
+# Support Vector Machine(Takes Time)
+This is not based on h2O as h2o doesn't support K-folds cross-validtion of SVM
+```{r error=FALSE, warning=FALSE, message=FALSE}
+
+library(e1071,warn.conflicts=F, quietly=T)
+library(caret,warn.conflicts=F, quietly=T)
+library(klaR,warn.conflicts=F, quietly=T)
+library(kernlab,warn.conflicts=F, quietly=T)
+fitcv <- trainControl(method="cv",number=5,search="random",savePredictions=T)
+my_svm <- train(Direction~.-Today,
+             data=as.data.frame(data)[train,],
+             method="svmRadialSigma",
+             trControl=fitcv, 
+             tuneLength=10,
+             preProcess=c("center","scale"))
+
+svm_pred <- predict(my_svm,newdata =
+                      as.data.frame(data[test,]))
+table(Direction[test], svm_pred)
+(55+483)/1000 # 0.538
+
+```
+
+# Train a stacked ensemble using models above
+```{r results='hide',error=FALSE, warning=FALSE, message=FALSE}
+base_models <- list(my_rf,my_ridge,my_gb)
+# Only used 3 regression models to form the base models. And choose a simple glm regression model as our meta model(default).
+ensemble <- h2o.stackedEnsemble(x = Predictors,
+                                y = Responses,
+                                training_frame =data[train,],
+                                base_models = base_models,
+                                seed=123)
+# Predictions of the test/out of sample data
+ensemble_pred <- as.data.frame(h2o.predict(ensemble,newdata = data[test,]))
+```
+
+
+```{r error=FALSE, warning=FALSE, message=FALSE}
+# Performance Comparison
+lapply(list(my_ridge,my_rf,my_gb,ensemble), h2o.performance,newdata = data[test,]) 
+# ensemble mse = 5.11482e-05
+```
+
+# Combine original inputs and Forecast (Stacked Ensemble Model) 
+Export the data and using as the input of DNN model for question 4.
+```{r}
+Direction <- as.data.frame(ifelse(ensemble_pred>0,"Up","Down"))
+ForecastData <- cbind(X[test,],ensemble_pred,Direction)
+names(ForecastData) <- cbind("Lag1","Lag2","Lag3","Lag4","Lag5","VolLag1","VolLag2","Forecast","Direction")
+```
+
+# Cummulative P/L 
+Using 1000 test data as before.
+```{r}
+PnL_orig = cumsum(Y)
+PnL_pred = cumsum(c(Y[train],unlist(ensemble_pred)))
+
+matplot(cbind(PnL_pred,PnL_orig),type="l",col=c("red","darkgrey"),ylab = "Cum Returns")
+legend("topleft", legend=c("Test data","Original"),
+       col=c("red", "darkgrey"), lty=1:2, cex=0.8)
+```
+
+Using only 300 test data following the train data.
+```{r echo=TRUE,results='hide',error=FALSE, warning=FALSE, message=FALSE}
+ensemble_pred_300 <- as.data.frame(h2o.predict(ensemble,newdata = data[2016:2316,]))
+```
+
+
+```{r echo=TRUE,error=FALSE, warning=FALSE, message=FALSE}
+PnL_orig_300 = cumsum(Y[1:2316])
+PnL_pred_300 = cumsum(c(Y[train],unlist(ensemble_pred_300)))
+
+matplot(cbind(PnL_pred_300,PnL_orig_300),type="l",col=c("red","darkgrey"),ylab = "Cum Returns")
+legend("topleft", legend=c("Test data","Original"),
+       col=c("red", "darkgrey"), lty=1:2, cex=0.8)
+```
+
+# Annualized Sharpe Ratios
+```{r echo=TRUE,}
+library(PerformanceAnalytics,warn.conflicts=F, quietly=T)
+ann_sharpe_original<-Return.annualized(Y,scale=252)/StdDev.annualized(Y,scale=252)
+
+ann_sharpe_train<-Return.annualized(Y[train],scale=252)/StdDev.annualized(Y[train],scale=252)
+
+ann_sharpe_pred<-Return.annualized(as.numeric(ensemble_pred$predict),scale=252)/StdDev.annualized(as.numeric(ensemble_pred$predict),scale=252)
+
+c=(c(Y[train],unlist(ensemble_pred)))
+ann_sharpe_trainPred<-Return.annualized(as.numeric(c),scale=252)/StdDev.annualized(as.numeric(c),scale=252)
+
+
+print(paste(ann_sharpe_original, "is ann_sharpe_original")) 
+print(paste(ann_sharpe_train, "is ann_sharpe_train")) 
+print(paste(ann_sharpe_pred, "is ann_sharpe_pred")) 
+print(paste(ann_sharpe_trainPred, "is ann_sharpe_trainPred")) 
+```
+

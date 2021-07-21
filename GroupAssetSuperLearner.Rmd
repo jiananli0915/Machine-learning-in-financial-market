@@ -1,0 +1,102 @@
+---
+title: "GroupAsstSuperLearner"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r error=FALSE, warning=FALSE, message=FALSE}
+library(SuperLearner)
+library(caret)
+```
+
+# Data Process
+```{r error=FALSE, warning=FALSE, message=FALSE}
+library(quantmod)
+getSymbols("^DJI",from = "2008-01-01",to = "2020-01-01",auto.assign = TRUE)
+
+DJI = as.data.frame(DJI)
+end = length(DJI$DJI.Adjusted)
+lrt = log(DJI$DJI.Adjusted[2:end]/DJI$DJI.Adjusted[1:end-1])
+lrt = tanh(lrt/0.03)*0.03
+hist(lrt)
+lvl = log(1+DJI$DJI.Volume)[2:end]
+```
+
+Make Lag Matries
+```{r error=FALSE, warning=FALSE, message=FALSE}
+library(tsutils)
+n = 5
+RLAG = lagmatrix(lrt,1:n)
+RLAG = RLAG[(n+1):length(lrt),]
+
+m = 2
+VLAG = lagmatrix(lvl,1:m)
+VLAG = VLAG[(n+1):length(lvl),]
+X = as.data.frame(cbind(RLAG,VLAG))
+Y = lrt[(n+1):length(lrt)] # Today's log return
+Direction = as.numeric(ifelse(Y>0,"1","0"))
+data = as.data.frame(cbind(X,Direction))
+names(data) <- cbind("Lag1","Lag2","Lag3","Lag4","Lag5","VolLag1","VolLag2","Direction")
+
+```
+
+Set train and test index
+```{r error=FALSE, warning=FALSE, message=FALSE}
+test = 2016:3015 # the last 1000 test data
+train = (-test)
+```
+
+# Logistic Regression 
+```{r error=FALSE, warning=FALSE, message=FALSE}
+set.seed(123)
+my_logistic <- SuperLearner(X = X[train,],
+                            Y = Direction [train],
+                            SL.library = "SL.glm",
+                            family = "binomial",
+                            cvControl = list(V = 5, shuffle = FALSE))
+
+
+logistic.pred <- predict.SuperLearner(my_logistic,X[test,],onlySL = T)
+logistic.pred$pred <- ifelse(logistic.pred$pred>0.5,1,0)
+
+confusionMatrix(as.factor(logistic.pred$pred),as.factor(Direction[test]))
+
+```
+# Support Vector Machine
+```{r error=FALSE, warning=FALSE, message=FALSE}
+set.seed(123)
+my_svm <- SuperLearner(X = X[train,],
+                          Y = Direction[train],
+                          SL.library = c("SL.svm"),
+                          family = "binomial",
+                          cvControl = list(V = 5, shuffle = FALSE))
+
+svm.pred <- predict.SuperLearner(my_svm,X[test,],onlySL = T)
+svm.pred$pred <- ifelse(svm.pred$pred>0.5,1,0)
+
+confusionMatrix(as.factor(svm.pred$pred),as.factor(Direction[test]))
+
+
+
+```
+
+# Stacked Ensemble model
+```{r error=FALSE, warning=FALSE, message=FALSE}
+set.seed(123)
+ensemble <-  SuperLearner(X = X[train,],
+                          Y = Direction[train],
+                          SL.library = c("SL.svm","SL.glm"),
+                          family = "binomial",
+                          control = list(saveFitLibrary = TRUE),
+                          cvControl = list(V = 5, shuffle = FALSE))  # 
+
+ensembe.pred <- predict.SuperLearner(ensemble,X[test,],onlySL = T)
+ensembe.pred$pred <- ifelse(ensembe.pred$pred>0.5,1,0)
+
+confusionMatrix(as.factor(ensembe.pred$pred),as.factor(Direction[test]))
+
+```
+
+
